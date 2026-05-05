@@ -12,7 +12,7 @@ import os
 import json
 import time
 from pathlib import Path
-from flask import Flask, request, abort
+from flask import Flask, request, abort, jsonify
 from anthropic import Anthropic
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
@@ -107,6 +107,127 @@ def reset():
 @app.route("/health")
 def health():
     return "ok"
+
+
+# ---- Browser chat (test interface, no SMS needed) ---------------------------
+# Lives at /chat. Uses a separate conversation key so it doesn't mix with the
+# SMS history. No auth - URL is just non-obvious. Burns Anthropic credits if
+# someone finds it, so don't share the URL.
+
+CHAT_HTML = """<!doctype html>
+<html><head><meta charset="utf-8">
+<title>Claude bot</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#1a1a1a;color:#eee;height:100vh;display:flex;flex-direction:column}
+  header{padding:12px 16px;background:#222;border-bottom:1px solid #333;font-weight:600;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+  header button{background:#444;color:#eee;border:0;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:12px}
+  #log{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+  .msg{max-width:75%;padding:10px 14px;border-radius:14px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word}
+  .user{align-self:flex-end;background:#0b6cff;color:#fff}
+  .bot{align-self:flex-start;background:#2d2d2d}
+  .err{align-self:center;background:#502020;font-size:12px;padding:6px 10px}
+  form{display:flex;padding:12px;gap:8px;border-top:1px solid #333;background:#222}
+  input{flex:1;padding:10px 14px;border-radius:20px;border:0;background:#333;color:#eee;font-size:14px;outline:none}
+  button[type=submit]{background:#0b6cff;color:#fff;border:0;padding:10px 18px;border-radius:20px;cursor:pointer;font-weight:600}
+  button[type=submit]:disabled{opacity:.5;cursor:not-allowed}
+  .typing{font-style:italic;opacity:.6}
+</style></head>
+<body>
+<header><span>Claude bot</span><button onclick="reset()">Clear</button></header>
+<div id="log"></div>
+<form id="f"><input id="i" placeholder="Type a message..." autocomplete="off" autofocus><button type="submit">Send</button></form>
+<script>
+const log = document.getElementById('log');
+const form = document.getElementById('f');
+const input = document.getElementById('i');
+const sendBtn = form.querySelector('button');
+
+function add(role, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + role;
+  d.textContent = text;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  return d;
+}
+
+async function reset() {
+  await fetch('/chat/reset', {method:'POST'});
+  log.innerHTML = '';
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  add('user', text);
+  input.value = '';
+  sendBtn.disabled = true;
+  const typing = add('bot typing', '...');
+  try {
+    const r = await fetch('/chat/api', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({message: text})
+    });
+    const data = await r.json();
+    typing.remove();
+    if (data.error) add('err', data.error);
+    else add('bot', data.reply);
+  } catch (err) {
+    typing.remove();
+    add('err', 'Network error: ' + err.message);
+  }
+  sendBtn.disabled = false;
+  input.focus();
+});
+</script></body></html>"""
+
+BROWSER_KEY = "_browser_chat"
+
+
+@app.route("/chat")
+def chat_page():
+    return CHAT_HTML, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@app.route("/chat/api", methods=["POST"])
+def chat_api():
+    data = request.get_json(silent=True) or {}
+    body = (data.get("message") or "").strip()
+    if not body:
+        return jsonify(error="empty message"), 400
+
+    all_convos = load_history()
+    history = all_convos.get(BROWSER_KEY, [])
+    history.append({"role": "user", "content": body})
+
+    try:
+        msg = anthropic.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            messages=history,
+        )
+        reply = msg.content[0].text.strip()
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] /chat error: {e}")
+        return jsonify(error=f"Claude error: {e}"), 500
+
+    history.append({"role": "assistant", "content": reply})
+    all_convos[BROWSER_KEY] = history[-MAX_TURNS:]
+    save_history(all_convos)
+    return jsonify(reply=reply)
+
+
+@app.route("/chat/reset", methods=["POST"])
+def chat_reset():
+    all_convos = load_history()
+    all_convos.pop(BROWSER_KEY, None)
+    save_history(all_convos)
+    return jsonify(ok=True)
 
 
 if __name__ == "__main__":
