@@ -128,21 +128,33 @@ CHAT_HTML = """<!doctype html>
   .user{align-self:flex-end;background:#0b6cff;color:#fff}
   .bot{align-self:flex-start;background:#2d2d2d}
   .err{align-self:center;background:#502020;font-size:12px;padding:6px 10px}
-  form{display:flex;padding:12px;gap:8px;border-top:1px solid #333;background:#222}
+  form{display:flex;padding:12px;gap:8px;border-top:1px solid #333;background:#222;align-items:center}
   input{flex:1;padding:10px 14px;border-radius:20px;border:0;background:#333;color:#eee;font-size:14px;outline:none}
+  #mic{background:#444;color:#fff;border:0;width:44px;height:44px;border-radius:50%;cursor:pointer;font-size:18px;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:0}
+  #mic:hover{background:#555}
+  #mic.recording{background:#e74c3c;animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.08);opacity:.85}}
   button[type=submit]{background:#0b6cff;color:#fff;border:0;padding:10px 18px;border-radius:20px;cursor:pointer;font-weight:600}
   button[type=submit]:disabled{opacity:.5;cursor:not-allowed}
   .typing{font-style:italic;opacity:.6}
+  .hint{font-size:11px;color:#888;text-align:center;padding:4px}
 </style></head>
 <body>
 <header><span>Claude bot</span><button onclick="reset()">Clear</button></header>
 <div id="log"></div>
-<form id="f"><input id="i" placeholder="Type a message..." autocomplete="off" autofocus><button type="submit">Send</button></form>
+<div class="hint" id="hint"></div>
+<form id="f">
+  <input id="i" placeholder="Type or tap mic to speak..." autocomplete="off" autofocus>
+  <button type="button" id="mic" title="Hold to dictate">🎤</button>
+  <button type="submit">Send</button>
+</form>
 <script>
 const log = document.getElementById('log');
 const form = document.getElementById('f');
 const input = document.getElementById('i');
-const sendBtn = form.querySelector('button');
+const sendBtn = form.querySelector('button[type=submit]');
+const micBtn = document.getElementById('mic');
+const hint = document.getElementById('hint');
 
 function add(role, text) {
   const d = document.createElement('div');
@@ -183,6 +195,66 @@ form.addEventListener('submit', async (e) => {
   sendBtn.disabled = false;
   input.focus();
 });
+
+// ---- Voice-to-text (browser Web Speech API) ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) {
+  micBtn.style.display = 'none';
+  hint.textContent = '(voice input not supported in this browser - use Chrome/Edge/Safari)';
+} else {
+  const recog = new SR();
+  recog.continuous = true;
+  recog.interimResults = true;
+  recog.lang = 'en-US';
+
+  let listening = false;
+  let baseText = '';
+
+  micBtn.addEventListener('click', () => {
+    if (listening) {
+      recog.stop();
+    } else {
+      baseText = input.value ? input.value + ' ' : '';
+      try { recog.start(); } catch (e) { /* already started */ }
+    }
+  });
+
+  recog.onstart = () => {
+    listening = true;
+    micBtn.classList.add('recording');
+    hint.textContent = 'Listening... tap mic again to stop';
+  };
+
+  recog.onend = () => {
+    listening = false;
+    micBtn.classList.remove('recording');
+    hint.textContent = '';
+    input.focus();
+  };
+
+  recog.onerror = (e) => {
+    listening = false;
+    micBtn.classList.remove('recording');
+    if (e.error === 'not-allowed') {
+      hint.textContent = 'Microphone permission denied. Allow it in your browser settings.';
+    } else if (e.error === 'no-speech') {
+      hint.textContent = '';
+    } else {
+      hint.textContent = 'Mic error: ' + e.error;
+    }
+  };
+
+  recog.onresult = (e) => {
+    let interim = '';
+    let finalText = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) finalText += t;
+      else interim += t;
+    }
+    input.value = (baseText + finalText + interim).trim();
+  };
+}
 </script></body></html>"""
 
 BROWSER_KEY = "_browser_chat"
