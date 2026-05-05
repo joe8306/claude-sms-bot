@@ -1,0 +1,17 @@
+# Render.com config for the Claude SMS bot.
+# Push this file to GitHub alongside bot.py + Dockerfile + requirements.txt.
+# Then on Render: New + -> Blueprint -> pick this repo. Render reads this file
+# and creates the service automatically.
+
+services:
+  - type: web
+    name: claude-sms-bot
+    runtime: docker
+    plan: free          # spins down after 15min idle - UptimeRobot pings keep it warm
+    healthCheckPath: /health
+    autoDeploy: true    # redeploy on every git push
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false     # set in Render UI, never committed to git
+      - key: TWILIO_AUTH_TOKEN
+        sync: false     # set in Render UI, never committed to git
